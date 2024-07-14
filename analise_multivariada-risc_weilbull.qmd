@@ -1,0 +1,1702 @@
+---
+title: "Análise dos dados de cancer colorretal - eventos recorrentes"
+author: "Camille Menezes"
+date: "2024/07/03"
+editor: source
+format:
+  html:
+    number-sections: true
+    smooth-scroll: true
+    link-external-newwindow: true
+    max-width: 3000px
+    toc: true
+    toc-location: left
+    self-contained: true
+    toc-title: "Sumário"
+    page-layout: article
+    theme:
+      light: cosmo
+      dark: darkly
+    code-fold: show
+    code-tools: true
+    
+    code-block-border-left: falses
+    code-line-numbers: false
+    code-copy: true
+    code-overflow: wrap
+execute:
+  warning: false
+  message: false
+  echo: false
+---
+
+```{r}
+set.seed(25102022)
+#set.seed(20231120)
+```
+
+```{r}
+library(modeest)
+library(dplyr)
+library(gridExtra)
+library(ggpubr)
+library(tidyverse)
+library(survival)
+library(flexsurv)
+library(plotly)
+library(zoo)
+library(patchwork)
+library(knitr)
+library(forecast)
+library(HelpersMG)
+library(survminer)
+library(qqplotr)
+library(EstimationTools)
+library(LaplacesDemon)
+```
+
+```{r}
+df <- read.csv("readmission.csv")|>
+  mutate(chemo = relevel(factor(chemo), "NonTreated"),
+         sex = relevel(factor(sex), "Male"),
+         dukes = relevel(factor(dukes), "A-B"),
+         charlson = relevel(factor(charlson), "0"),
+         death = NULL,
+         time = t.stop) 
+```
+
+Neste documento, duas abordagens, frequentista e Bayesiana, são consideradas para analisar o tempo até a ocorrência de múltiplas reinternações após a cirurgia de remoção do tumor de pacientes diagnosticados com câncer colorretal.
+
+# Análise descritiva
+
+```{r}
+df1 <- df |>
+  filter(enum == 1)
+
+df2 <- df |>
+  filter(enum == 1 & event == 0 | 
+         enum == 2 & event == 0 |
+         enum == 2 & event == 1)
+
+df3 <- df |>
+  filter(enum == 1 & event == 0 | 
+         enum == 2 & event == 0 | 
+         enum == 3 & event == 0 |
+         enum == 3 & event == 1)
+
+df4 <- df |>
+  filter(enum == 1 & event == 0 | 
+         enum == 2 & event == 0 |
+         enum == 3 & event == 0 | 
+         enum == 4 & event == 0 |
+         enum == 4 & event == 1)
+
+df5 <- df |>
+  filter(enum == 1 & event == 0 | 
+         enum == 2 & event == 0 | 
+         enum == 3 & event == 0 | 
+         enum == 4 & event == 0 |
+         enum == 5 & event == 0 |
+         enum == 5 & event == 1)
+
+df6 <- df |>
+  filter(enum == 1 & event == 0 | 
+         enum == 2 & event == 0 |
+         enum == 3 & event == 0 | 
+         enum == 4 & event == 0 | 
+         enum == 5 & event == 0 | 
+         enum == 6 & event == 0 |
+         enum == 6 & event == 1)
+```
+
+os dados de cancer colorretal apresentam `r nrow(df)` observações de `r length(unique(df$id))`. Desses indivíduos, `r round(1-table(summarise(group_by(df,id),sum(event))[,2])[1]/length(unique(df$id)),4)*100`% foram reinternados,
+`r as.numeric(round(prop.table(table(summarise(group_by(df,id),unique(chemo)) [2]))[2]*100,2))`\% foram tratados com quimioterapia, `r as.numeric(round(prop.table(table(summarise(group_by(df,id),unique(sex)) [2]))[2]*100,2))`\% são do sexo feminino, `r round(prop.table(table(summarise(group_by(df,id),unique(dukes))[2]))*100,2)[1]`% apresentam estágio tumoral A-B, `r round(prop.table(table(summarise(group_by(df,id),unique(dukes))[2]))*100,2)[2]`% apresentam estágio tumoral C e `r round(prop.table(table(summarise(group_by(df,id),unique(dukes))[2]))*100,2)[3]`% apresentam estágio tumoral D. É possível observar o Indice de Comorbidade de Charlson's para esses indivíduos na figura a seguir.
+
+```{r}
+d2 <- df |>
+  filter(enum <= 6) |>
+  group_by(enum,charlson) |>
+  summarize(count = n()) |>
+  mutate(pct = count/sum(count)) 
+
+ggplot(d2, aes(fill=charlson, y=pct,x=factor(enum))) + 
+  geom_col(position = position_dodge(0.7),width = 0.5) + 
+  scale_y_continuous(labels=scales::percent, breaks=seq(0,1,0.2))+
+  scale_fill_manual(values=c("#5639cc","#26a4d0","#071e26"))+
+  labs(y="Porcentagem de pacientes", fill="Índ. de Comorbidade",x="Evento")+
+  theme_bw() 
+```
+
+Cerca de `r round(sum(prop.table(table(df$enum))[1:3])*100,2)`% das observações ocorreram até o terceiro evento. Para sintetizar os resultados obtidos, na análise descritiva foram consirados os tempos até a terceira internação.
+
+```{r}
+#não falhou
+d <- table(df$id)
+d1 <- data.frame(id=subset(d,d==1))|>
+  mutate(id=id.Var1)
+
+dfe <- df |>
+  mutate(id=factor(id))
+
+dfe0 <- left_join(d1,dfe,by="id")
+
+table(dfe0$chemo)
+round(prop.table(table(dfe0$chemo)),3)
+table(dfe0$sex)
+round(prop.table(table(dfe0$sex)),3)
+table(dfe0$dukes)
+round(prop.table(table(dfe0$dukes)),3)
+table(dfe0$charlson)
+round(prop.table(table(dfe0$charlson)),3)
+
+#falhou uma vez
+d <- table(df$id)
+d1 <- data.frame(id=subset(d,d==2))|>
+  mutate(id=id.Var1)
+
+dfe <- df |>
+  mutate(id=factor(id))
+
+dfe1 <- left_join(d1,dfe,by="id") |>
+  filter(event !=0)
+
+table(dfe1$chemo)
+round(prop.table(table(dfe1$chemo)),3)
+table(dfe1$sex)
+round(prop.table(table(dfe1$sex)),3)
+table(dfe1$dukes)
+round(prop.table(table(dfe1$dukes)),3)
+table(dfe1$charlson)
+round(prop.table(table(dfe1$charlson)),3)
+
+#falhou duas vezes
+d <- table(df$id)
+d1 <- data.frame(id=subset(d,d==3))|>
+  mutate(id=id.Var1)
+
+dfe <- df |>
+  mutate(id=factor(id))
+
+dfe3 <- left_join(d1,dfe,by="id") |>
+  filter(event !=0) 
+dfe3 <- dfe3[seq(2,nrow(dfe3),2),]
+
+table(dfe3$chemo)
+round(prop.table(table(dfe3$chemo)),3)
+table(dfe3$sex)
+round(prop.table(table(dfe3$sex)),3)
+table(dfe3$dukes)
+round(prop.table(table(dfe3$dukes)),3)
+table(dfe3$charlson)
+round(prop.table(table(dfe3$charlson)),3)
+
+#falhou três vezes
+d <- table(df$id)
+d1 <- data.frame(id=subset(d,d==4))|>
+  mutate(id=id.Var1)
+
+dfe <- df |>
+  mutate(id=factor(id))
+
+dfe4 <- left_join(d1,dfe,by="id") |>
+  filter(enum ==3) 
+
+table(dfe4$chemo)
+round(prop.table(table(dfe4$chemo)),3)
+table(dfe4$sex)
+round(prop.table(table(dfe4$sex)),3)
+table(dfe4$dukes)
+round(prop.table(table(dfe4$dukes)),3)
+table(dfe4$charlson)
+round(prop.table(table(dfe4$charlson)),3)
+
+#falhou quatro vezes
+d <- table(df$id)
+d1 <- data.frame(id=subset(d,d==5))|>
+  mutate(id=id.Var1)
+
+dfe <- df |>
+  mutate(id=factor(id))
+
+dfe5 <- left_join(d1,dfe,by="id") |>
+  filter(enum ==4) 
+
+table(dfe5$chemo)
+round(prop.table(table(dfe5$chemo)),3)
+table(dfe5$sex)
+round(prop.table(table(dfe5$sex)),3)
+table(dfe5$dukes)
+round(prop.table(table(dfe5$dukes)),3)
+table(dfe5$charlson)
+round(prop.table(table(dfe5$charlson)),3)
+```
+
+::: panel-tabset
+
+### TTT plot
+
+```{r}
+tte <- TTTE_Analytical(Surv(t.start,t.stop, event)~1,method="cens",data = df)
+
+ggplot()+
+  aes(x=tte$`i/n`,y=tte$phi_n)+
+  geom_abline(intercept=0,slope=1, linetype=2, color="blue",linewidth=2)+
+  geom_line()+
+  labs(y=expression(phi[n](i/n)),x="i/n")+
+  theme_bw()
+```
+
+### Pacientes versus tempos
+
+```{r}
+n <- c(1:43)
+d <- summarise(group_by(df[n,],id),max(time),) |>
+  mutate(id=as.character(id)) |>
+  data.frame()
+
+ggplot(df[n,])+
+  aes(x=time, y=id, color=factor(event))+
+  geom_point()+
+  geom_segment(y=d[1,1],x=0,xend=d[1,2],color="#071e26")+
+  geom_segment(y=d[2,1],x=0,xend=d[2,2],color="#071e26")+
+  geom_segment(y=d[3,1],x=0,xend=d[3,2],color="#071e26")+
+  geom_segment(y=d[4,1],x=0,xend=d[4,2],color="#071e26")+
+  geom_segment(y=d[5,1],x=0,xend=d[5,2],color="#071e26")+
+  geom_segment(y=d[6,1],x=0,xend=d[6,2],color="#071e26")+
+  geom_segment(y=d[7,1],x=0,xend=d[7,2],color="#071e26")+
+  geom_segment(y=d[8,1],x=0,xend=d[8,2],color="#071e26")+
+  geom_segment(y=d[9,1],x=0,xend=d[9,2],color="#071e26")+
+  geom_segment(y=d[10,1],x=0,xend=d[10,2],color="#071e26")+
+  geom_segment(y=d[11,1],x=0,xend=d[11,2],color="#071e26")+
+  geom_segment(y=d[12,1],x=0,xend=d[12,2],color="#071e26")+
+  geom_segment(y=d[13,1],x=0,xend=d[13,2],color="#071e26")+
+  geom_segment(y=d[14,1],x=0,xend=d[14,2],color="#071e26")+
+  geom_segment(y=d[15,1],x=0,xend=d[15,2],color="#071e26")+
+  geom_segment(y=d[16,1],x=0,xend=d[16,2],color="#071e26")+
+  geom_segment(y=d[17,1],x=0,xend=d[17,2],color="#071e26")+
+  geom_segment(y=d[18,1],x=0,xend=d[18,2],color="#071e26")+
+  geom_segment(y=d[19,1],x=0,xend=d[19,2],color="#071e26")+
+  geom_segment(y=d[20,1],x=0,xend=d[20,2],color="#071e26")+
+  labs(y="Pacientes",x="Tempos até as reinternações ou censura (dias)",color="")+
+  scale_y_discrete(limits=as.character(1:20))+
+  scale_color_manual(values = c("0" = "#26a4d0","1"= "#071e26"),labels = c("Censura", "Falha"))+
+  theme_bw()
+```
+
+### Todos os pacientes vesus tempos
+
+```{r}
+ggplot(df)+
+  aes(x=time, y=id, colour=factor(event))+
+  geom_point()+
+  labs(y="Pacientes",x="Tempos",color="Evento")+
+   scale_colour_manual(values = c("0" = "#26a4d0","1"= "#071e26"),
+                                   labels = c("Censura", "Falha"))+
+  theme_bw()
+  
+```
+
+### Índ. versus tempos
+
+```{r}
+`Tempo até a primeira reinternação` <- df$time
+    Paciente <- index(df$time)
+    Status <- ifelse(as.character(df$event) == "0", "Censura", "Falha")
+    d3 <- data.frame(`Tempo até a primeira reinternação`,
+                     Paciente, Status)
+    ggplotly(ggplot(d3)+
+               aes(x=`Tempo até a primeira reinternação`, 
+                   y=Paciente, colour = Status)+
+               geom_point()+
+               scale_colour_manual(values = c("Censura" = "#26a4d0","Falha"= "#071e26"),
+                                   labels = c("Censura", "Falha"))+
+               labs(x="Tempos", y="Índice", color="")+
+               theme_bw())
+```
+
+::: 
+
+Considerando todos os tempos, a primeira intenação ocorreu no `r min(subset(df, df$event == 1)$time)`º dia e a última no `r max(subset(df, df$event == 1)$time)`º dia.
+
+## Tempo até o primeiro evento
+
+Considerando o tempo até o primeiro evento, a primeira intenação ocorreu no `r min(subset(df1, df1$event == 1)$time)`º dia e a última no `r max(subset(df1, df1$event == 1)$time)`º dia. As curvas de kaplan-Meier podem ser vistas no gráfico a seguir.
+
+```{r}
+ekm1 <- survfit(Surv(time,event)~chemo, data=df1)
+      
+tc1 <- ekm1$time[1:161]
+tc2 <- ekm1$time[162:(length(ekm1$time)-1)]
+sc1 <- ekm1$surv[1:161]
+sc2 <- ekm1$surv[162:(length(ekm1$time)-1)]
+    
+d1 <- data.frame(Tempo = c(tc1,tc2), `Sobrevivência estimada` = round(c(sc1,sc2),2), Quimioterapia=c(rep("Não tratado",length(tc1)),rep("Tratado",length(tc2))))
+      
+fig1 <- ggplot(d1)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Quimioterapia))+
+        scale_color_manual(values=c("#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm2 <- survfit(Surv(time,event)~sex, data=df1)
+      
+ts1 <- ekm2$time[1:192]
+ts2 <- ekm2$time[193:(length(ekm2$surv)-1)]
+ss1 <- ekm2$surv[1:192]
+ss2 <- ekm2$surv[193:(length(ekm2$surv)-1)]
+      
+d2 <- data.frame(Tempo = c(ts1,ts2), `Sobrevivência estimada` = round(c(ss1,ss2),2), Sexo=c(rep("Masculino",length(ts1)),rep("Feminino",length(ts2))))
+      
+fig2 <- ggplot(d2)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Sexo))+
+        scale_color_manual(values=c("#071e26","#39cccc"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm3 <- survfit(Surv(time,event)~dukes, data=df1)
+      
+td1 <- ekm3$time[1:152]
+td2 <- ekm3$time[154:289]
+td3 <- ekm3$time[290:length(ekm3$time)]
+sd1 <- ekm3$surv[1:152]
+sd2 <- ekm3$surv[154:289]
+sd3 <- ekm3$surv[290:length(ekm3$surv)]
+    
+d3 <- data.frame(Tempo = c(td1,td2,td3), 
+                `Sobrevivência estimada` = round(c(sd1,sd2,sd3),2), 
+                       Dukes=c(rep("A-B",length(td1)),rep("C",length(td2)),rep("D", length(td3))))
+      
+fig3 <- ggplot(d3)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Dukes))+
+        scale_color_manual(values=c("#5639cc","#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm4 <- survfit(Surv(time,event)~charlson, data=df1)
+      
+tcc1 <- ekm4$time[1:235]
+tcc2 <- ekm4$time[237:252]
+tcc3 <- ekm4$time[253:length(ekm4$time)]
+scc1 <- ekm4$surv[1:235]
+scc2 <- ekm4$surv[237:252]
+scc3 <- ekm4$surv[253:length(ekm4$surv)]
+    
+d4 <- data.frame(Tempo=c(tcc1,tcc2,tcc3), `Sobrevivência estimada`= round(c(scc1,scc2,scc3),2), Charlson = c(rep("0",length(tcc1)),rep("1-2",length(tcc2)),rep("3", length(tcc3))))
+      
+fig4 <- ggplot(d4)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Charlson))+
+        scale_color_manual(values=c("#5639cc","#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+```
+
+```{r}
+ggarrange(fig1,fig2,fig3,fig4) |>
+  annotate_figure(bottom=text_grob("Tempo até a primeira reinternação (dias)"),
+                  left=text_grob("S(t)"))
+```
+
+```{r}
+valorp <- c(
+survdiff(Surv(time,event)~chemo, data=df1)$pvalue,
+survdiff(Surv(time,event)~sex, data=df1)$pvalue,
+survdiff(Surv(time,event)~dukes, data= df1)$pvalue,
+survdiff(Surv(time,event)~charlson, data= df1)$pvalue)
+
+d <- data.frame(Valorp = round(valorp,3))
+row.names(d) <- c("chemo", "sex", "dukes", "charlson")
+
+kable(d,caption = "Valor-p do teste logrank")
+```
+
+```{r}
+pairwise_survdiff(Surv(time,event)~dukes, data= df1, p.adjust.method = "bonferroni")
+pairwise_survdiff(Surv(time,event)~charlson, data= df1, p.adjust.method = "bonferroni")
+```
+
+## Tempo até o segundo evento
+
+Considerando o tempo até o segundo evento, a primeira intenação ocorreu no `r min(subset(df2, df2$event == 1)$time)`º dia e a última no `r max(subset(df2, df2$event == 1)$time)`º dia. As curvas de kaplan-Meier podem ser vistas no gráfico a seguir.
+
+```{r}
+ekm1 <- survfit(Surv(time,event)~chemo, data=df2)
+      
+tc1 <- ekm1$time[1:173]
+tc2 <- ekm1$time[174:(length(ekm1$time)-1)]
+sc1 <- ekm1$surv[1:173]
+sc2 <- ekm1$surv[174:(length(ekm1$time)-1)]
+    
+d1 <- data.frame(Tempo = c(tc1,tc2), `Sobrevivência estimada` = round(c(sc1,sc2),2), Quimioterapia=c(rep("Não tratado",length(tc1)),rep("Tratado",length(tc2))))
+      
+fig1 <- ggplot(d1)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Quimioterapia))+
+        scale_color_manual(values=c("#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm2 <- survfit(Surv(time,event)~sex, data=df2)
+      
+ts1 <- ekm2$time[1:221]
+ts2 <- ekm2$time[222:(length(ekm2$surv)-1)]
+ss1 <- ekm2$surv[1:221]
+ss2 <- ekm2$surv[222:(length(ekm2$surv)-1)]
+      
+d2 <- data.frame(Tempo = c(ts1,ts2), `Sobrevivência estimada` = round(c(ss1,ss2),2), Sexo=c(rep("Masculino",length(ts1)),rep("Feminino",length(ts2))))
+      
+fig2 <- ggplot(d2)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Sexo))+
+        scale_color_manual(values=c("#071e26","#39cccc"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm3 <- survfit(Surv(time,event)~dukes, data=df2)
+      
+td1 <- ekm3$time[1:171]
+td2 <- ekm3$time[172:314]
+td3 <- ekm3$time[315:length(ekm3$time)]
+sd1 <- ekm3$surv[1:171]
+sd2 <- ekm3$surv[172:314]
+sd3 <- ekm3$surv[315:length(ekm3$surv)]
+    
+d3 <- data.frame(Tempo = c(td1,td2,td3), 
+                `Sobrevivência estimada` = round(c(sd1,sd2,sd3),2), 
+                       Dukes=c(rep("A-B",length(td1)),rep("C",length(td2)),rep("D", length(td3))))
+      
+fig3 <- ggplot(d3)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Dukes))+
+        scale_color_manual(values=c("#5639cc","#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm4 <- survfit(Surv(time,event)~charlson, data=df2)
+      
+tcc1 <- ekm4$time[1:263]
+tcc2 <- ekm4$time[264:286]
+tcc3 <- ekm4$time[287:length(ekm4$time)]
+scc1 <- ekm4$surv[1:263]
+scc2 <- ekm4$surv[264:286]
+scc3 <- ekm4$surv[287:length(ekm4$surv)]
+    
+d4 <- data.frame(Tempo=c(tcc1,tcc2,tcc3), `Sobrevivência estimada`= round(c(scc1,scc2,scc3),2), Charlson = c(rep("0",length(tcc1)),rep("1-2",length(tcc2)),rep("3", length(tcc3))))
+      
+fig4 <- ggplot(d4)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Charlson))+
+        scale_color_manual(values=c("#5639cc","#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+```
+
+```{r}
+ggarrange(fig1,fig2,fig3,fig4) |>
+  annotate_figure(bottom=text_grob("Tempo até a segunda reinternação (dias)"),
+                  left=text_grob("S(t)"))
+```
+
+```{r}
+valorp <- c(
+survdiff(Surv(time,event)~chemo, data=df2)$pvalue,
+survdiff(Surv(time,event)~sex, data=df2)$pvalue,
+survdiff(Surv(time,event)~dukes, data= df2)$pvalue,
+survdiff(Surv(time,event)~charlson, data= df2)$pvalue)
+
+d <- data.frame(Valorp = round(valorp,3))
+row.names(d) <- c("chemo", "sex", "dukes", "charlson")
+
+kable(d,caption="Valor-p do teste logrank")
+```
+
+```{r}
+pairwise_survdiff(Surv(time,event)~dukes, data= df2, p.adjust.method = "bonferroni")
+pairwise_survdiff(Surv(time,event)~charlson, data= df2, p.adjust.method = "bonferroni")
+```
+
+## Tempo até o terceiro evento
+
+Considerando o tempo até o primeiro evento, a primeira intenação ocorreu no `r min(subset(df3, df3$event == 1)$time)`º dia e a última no `r max(subset(df3, df3$event == 1)$time)`º dia. As curvas de kaplan-Meier podem ser vistas no gráfico a seguir.
+
+```{r}
+ekm1 <- survfit(Surv(time,event)~chemo, data=df3)
+      
+tc1 <- ekm1$time[1:170]
+tc2 <- ekm1$time[171:(length(ekm1$time)-1)]
+sc1 <- ekm1$surv[1:170]
+sc2 <- ekm1$surv[171:(length(ekm1$time)-1)]
+    
+d1 <- data.frame(Tempo = c(tc1,tc2), `Sobrevivência estimada` = round(c(sc1,sc2),2), Quimioterapia=c(rep("Não tratado",length(tc1)),rep("Tratado",length(tc2))))
+      
+fig1 <- ggplot(d1)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Quimioterapia))+
+        scale_color_manual(values=c("#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm2 <- survfit(Surv(time,event)~sex, data=df3)
+      
+ts1 <- ekm2$time[1:219]
+ts2 <- ekm2$time[220:(length(ekm2$surv)-1)]
+ss1 <- ekm2$surv[1:219]
+ss2 <- ekm2$surv[220:(length(ekm2$surv)-1)]
+      
+d2 <- data.frame(Tempo = c(ts1,ts2), `Sobrevivência estimada` = round(c(ss1,ss2),2), Sexo=c(rep("Masculino",length(ts1)),rep("Feminino",length(ts2))))
+      
+fig2 <- ggplot(d2)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Sexo))+
+        scale_color_manual(values=c("#071e26","#39cccc"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm3 <- survfit(Surv(time,event)~dukes, data=df3)
+      
+td1 <- ekm3$time[1:170]
+td2 <- ekm3$time[171:312]
+td3 <- ekm3$time[313:length(ekm3$time)]
+sd1 <- ekm3$surv[1:170]
+sd2 <- ekm3$surv[171:312]
+sd3 <- ekm3$surv[313:length(ekm3$surv)]
+    
+d3 <- data.frame(Tempo = c(td1,td2,td3), 
+                `Sobrevivência estimada` = round(c(sd1,sd2,sd3),2), 
+                       Dukes=c(rep("A-B",length(td1)),rep("C",length(td2)),rep("D", length(td3))))
+      
+fig3 <- ggplot(d3)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Dukes))+
+        scale_color_manual(values=c("#5639cc","#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+
+ekm4 <- survfit(Surv(time,event)~charlson, data=df3)
+      
+tcc1 <- ekm4$time[1:266]
+tcc2 <- ekm4$time[267:285]
+tcc3 <- ekm4$time[286:length(ekm4$time)]
+scc1 <- ekm4$surv[1:266]
+scc2 <- ekm4$surv[267:285]
+scc3 <- ekm4$surv[286:length(ekm4$surv)]
+    
+d4 <- data.frame(Tempo=c(tcc1,tcc2,tcc3), `Sobrevivência estimada`= round(c(scc1,scc2,scc3),2), Charlson = c(rep("0",length(tcc1)),rep("1-2",length(tcc2)),rep("3", length(tcc3))))
+      
+fig4 <- ggplot(d4)+
+        geom_step(aes(x=Tempo, y=`Sobrevivência.estimada`, color=Charlson))+
+        scale_color_manual(values=c("#5639cc","#071e26","#26a4d0"))+
+        labs(x="", y="")+
+        theme_bw()
+```
+
+```{r}
+ggarrange(fig1,fig2,fig3,fig4) |>
+  annotate_figure(bottom=text_grob("Tempo até a terceira reinternação (dias)"),
+                  left=text_grob("S(t)"))
+```
+
+```{r}
+valorp <- c(
+survdiff(Surv(time,event)~chemo, data=df3)$pvalue,
+survdiff(Surv(time,event)~sex, data=df3)$pvalue,
+survdiff(Surv(time,event)~dukes, data= df3)$pvalue,
+survdiff(Surv(time,event)~charlson, data= df3)$pvalue)
+
+d <- data.frame(Valorp = round(valorp,3))
+row.names(d) <- c("chemo", "sex", "dukes", "charlson")
+
+kable(d,caption="Valor-p do teste logrank")
+```
+
+```{r}
+pairwise_survdiff(Surv(time,event)~dukes, data= df3, p.adjust.method = "bonferroni")
+pairwise_survdiff(Surv(time,event)~charlson, data= df3, p.adjust.method = "bonferroni")
+```
+
+# Modelo completo
+
+## Abordagem frequentista
+
+```{r}
+sm <- function(op, tipo = "result"){
+  coef <- op$par
+  se <- SEfromHessian(-1*op$hessian)
+  z <- coef/se
+  p_value <- 2*pnorm(abs(z),lower.tail=FALSE)
+  i2.5  <- coef+qnorm(0.025)*se
+  i97.5 <- coef+qnorm(0.975)*se
+  
+  res <- cbind(coef,exp(coef),exp(-coef),se,z,p_value,i2.5,i97.5)
+  rownames(res) <- c("Intercepto","chemoTreated", "sexFemale", "dukesC", "dukesD", "charlson1-2",  "charlson3", "gama","xi")
+  colnames(res) <- c("coef","exp(coef)","exp(-coef)","se(coef)","z","p-value","2.5%","97.5%")
+  
+  result <- as.table(round(res,digits = 3))
+  
+  return(result)
+}
+```
+
+```{r}
+modelfreq <- coxph(Surv(t.start,t.stop, event)~chemo+sex+dukes+charlson+frailty.gamma(id), data = df)
+```
+
+```{r}
+X <- cbind(intercepto=rep(1,nrow(df)),model.matrix(modelfreq,data=df)[,-ncol(model.matrix(modelfreq,data=df))])
+id <- df$id
+event <- df$event
+time <- df$time
+
+vero <- function(theta){
+  beta <- theta[1:ncol(X)]
+  gama <- theta[ncol(X)+1]
+  xi <- theta[ncol(X)+2]
+  
+  Dj <- summarise(group_by(df,id),sum(event))[,2]
+  Lambdaj <- summarise(group_by(data.frame(df,d=exp(X%*%beta)*(time^gama)),id),sum(d))[,2]
+  
+  LL <- sum(-(1/xi)*log(xi) -log(gamma(1/xi)) + log(gamma((1/xi)+Dj)) - ((1/xi)+Dj)*log((1/xi)+Lambdaj)) + sum(event*log(gama*(time^(gama-1))*(exp(X%*%beta))))
+  
+  return(LL)
+}
+
+Initial.Values <- c(1,modelfreq$coefficients,0.74,1.3)
+estfreq <- optim(Initial.Values, vero, hessian = TRUE, method = "L-BFGS-B",
+                 control = list(maxit=3000000,fnscale=-1),
+                 lower = c(rep(-Inf,ncol(X)),0.01,0.01))
+estfreq1 <- estfreq
+```
+
+
+A partir da abordagem frequentista, é possível notar que todas as covariáveis, com exceção da quimioterapia, são significativas ao nível de 5\%. É possível notar ainda que, ao nível de 5\%, há evidências o suficiente para concluir que a variância da fragilidade não é nula e o modelo não se reduz ao modelo para dados independentes.
+
+
+```{r}
+kable(sm(estfreq))
+```
+
+Tomando o exponencial do seu coeficiente estimado, mantidas fixas as outras covariáveis, tem-se que:
+
+- O risco de reinternação dos pacientes do sexo feminino é `r sm(estfreq)[3,2]` vezes o risco dos pacientes do sexo masculino;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r sm(estfreq)[4,3]` vezes o risco dos pacientes que apresentam estágio C;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r sm(estfreq)[5,3]` vezes o risco dos pacientes que apresentam estágio D;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r sm(estfreq)[6,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 1-2;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r sm(estfreq)[7,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 3.
+
+## Resíduos
+
+```{r}
+#| output: false
+theta <- estfreq1$par
+beta <- theta[1:ncol(X)]
+gama <- theta[ncol(X)+1]
+xi <- theta[ncol(X)+2]
+
+frag <- rgamma(403,1/xi,1/xi)
+zj <- frag[1]
+j <- 1
+
+for (i in 2:nrow(df)){
+  if(df$id[i] != df$id[(i-1)]){
+    j <- j+1
+    zj <- c(zj,frag[j])
+  }
+  else{
+    zj <- c(zj,frag[j])
+  }
+}
+
+Lambda <- NULL
+for (i in 1:nrow(df)){
+  f<-function(t){
+    lambda <- zj[i]*gama*(t^(gama-1))*(exp(X[i,]%*%beta))
+  }
+  Lambda <- c(Lambda,integrate(f,0.001,time[i])$value)
+}
+
+resid <- qnorm(Lambda)
+```
+
+```{r}
+figres1 <- ggplot()+
+  aes(x=seq(1:nrow(df)),y=resid)+
+  geom_point()+
+  labs(x="Índice", y="Resíduos quantílicos")+
+  ##geom_hline(yintercept = c(3,-3), colour = "blue",linetype = "dashed")+
+  theme_bw() 
+figres2 <- ggplot() +
+  aes(sample=resid)+
+  stat_qq_point(detrend = T) +
+  stat_qq_band(detrend = T, color='black', fill=NA, size=0.5, linetype="dashed")+
+  geom_hline(yintercept = 0, colour = "blue",linetype = "dashed")+
+  geom_vline(xintercept = 0, colour = "blue",linetype = "dashed")+
+  labs(x="Quantis teóricos",y="Desvios")+
+  theme_bw()
+figres1|figres2
+```
+
+
+## Abordagem Bayesiana
+
+```{r}
+X <- cbind(intercepto=rep(1,nrow(df)),model.matrix(modelfreq,data=df)[,-ncol(model.matrix(modelfreq,data=df))])
+p <- ncol(X)
+beta0 <- rep(0,p)                   
+V0 <- matrix(c(rep(0,p^2)), ncol=p, nrow=p) 
+diag(V0) <- rep(1000,p)
+c <- 0.1
+
+Initial.Values <- c(1,modelfreq$coefficients,0.74,1.3)
+
+burnin <- 1000
+thin <- 200
+N <- (1000+burnin)*thin
+
+parm.names <- as.parm.names(list(beta=rep(0,p),gama=0,xi=0))
+pos.beta <- grep("beta", parm.names)
+pos.gama <- grep("gama", parm.names)
+pos.xi <- grep("xi", parm.names)
+
+MyData <- list(J=p, X=X, time=time, id=id, event=event, mon.names="LP", 
+               parm.names=parm.names,pos.beta=pos.beta,
+               pos.gama=pos.gama,pos.xi=pos.xi)
+
+modelobayes <- function(parm, Data=MyData)
+{ ### Parameters
+  beta <- parm[Data$pos.beta]
+  gama <- parm[Data$pos.gama]
+  xi <- parm[Data$pos.xi]
+  
+  ### Log-Prior
+  beta.prior <- dmvn(beta, beta0, V0, log=TRUE)
+  gama.prior <- dexp(gama, c, log=TRUE)
+  xi.prior <- dexp(xi, c, log=TRUE)
+  
+  ### Log-Likelihood
+  
+  Dj <- summarise(group_by(df,id),sum(event))[,2]
+  
+  Lambdaj <- summarise(group_by(data.frame(df,d=exp(X%*%beta)*(time^gama)),id),sum(d))[,2]
+  
+  LL <- sum(-(1/xi)*log(xi) -log(gamma(1/xi)) + log(gamma((1/xi)+Dj)) - ((1/xi)+Dj)*log((1/xi)+Lambdaj)) + sum(event*log(gama*(time^(gama-1))*(exp(X%*%beta))))
+  
+  
+  ### Log-Posterior
+  LP <- LL + beta.prior + gama.prior + xi.prior
+  
+  Modelout <- list(LP=LP, Dev=-2*LL, Monitor=LP, yhat = exp(X*beta), parm=parm)
+  return(Modelout)
+}
+```
+
+```{r}
+#| output: false
+#modelbayes <- LaplacesDemon(modelobayes, Data=MyData, Initial.Values, Covar=NULL, #Iterations=N, Status=N/5, Thinning=thin, Algorithm="AMWG", Specs=NULL)
+
+load("G:/Meu Drive/TCC/Scripts/model_bayes_weibull1.RData")
+modelbayes1 <- modelbayes
+```
+
+```{r}
+beta1 <- apply(modelbayes$Posterior1,2,mlv)
+vero1 <- vero(beta1)
+prior1 <- dmvn(beta1[1:ncol(X)], beta0, V0, log=TRUE)+dexp(beta1[(ncol(X)+1)], c, log=TRUE)+dexp(beta1[(ncol(X)+2)], c, log=TRUE)
+```
+Utilizando o algoritmo Adaptative Metropolis-within-Gibbs, obteve-se uma taxa de aceitação de `r round(modelbayes$Acceptance.Rate*100,2)`\%, próxima do considerado ótimo.
+
+```{r}
+dic1 <- data.frame(all=round(modelbayes$DIC1,2), stationary=round(modelbayes$DIC1,2))
+colnames(dic1) <- c("Todas as amostras","Estacionárias")
+rownames(dic1) <- c("Dbar", "pd", "DIC")
+```
+
+```{r}
+mode <- cbind(c(round(apply(modelbayes$Posterior1,2,mlv),3),Deviance=round(mlv(modelbayes$Deviance),3),LP="-"))
+d <- data.frame(mode = mode,
+                'exp(coef)' =  c(round(exp(as.numeric(mode[1:9])),3), "-","-"),
+                'exp(-coef)' =  c(round(exp(-as.numeric(mode[1:9])),3),"-","-"),
+                round(modelbayes$Summary1,3))
+```
+
+Tomando o exponencial do seu coeficiente estimado, mantidas fixas as outras covariáveis, tem-se que:
+
+- O risco de reinternação dos pacientes do sexo feminino é `r d[3,2]` vezes o risco dos pacientes do sexo masculino;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r d[4,3]` vezes o risco dos pacientes que apresentam estágio C;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r d[5,3]` vezes o risco dos pacientes que apresentam estágio D;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r d[6,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 1-2;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r d[7,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 3;
+
+```{r}
+kable(d, caption = "Tabela: Medidas resumo das distribuições dos parâmetros da distribuição a posteriori, do desvio e do LP.")
+```
+
+
+
+
+A partir dos gráficos a seguir e da Tabela, é possível notar que as distribuições a posteriori dos betas, gama e xi são simétricas. É possível notar também há uma notável estacionariedade, evidenciada pela ausência de tendências nos gráficos. O que indica que as amostras estão sendo colhidas de forma aleatória da mesma distribuição alvo. 
+
+Os correlogramas exibidos revelam uma escassa presença de autocorrelações significativas, sugerindo que as amostras podem ser consideradas independentes. Ou seja, as amostras geradas não são fortemente influenciadas pelas amostras geradas anteriormente. 
+
+Os desvios sugerem que a maioria das verossimilhanças foram maximizadas durante o processo, já que a distribuição é assimétrica à direita. Além disso, o correlograma não apresenta indícios de autocorrelação nos desvios das amostras.
+
+Os logaritmos da distribuição a posteriori, das amostras indicam a sua boa adequação, uma vez que a sua distribuição é assimétrica à esquerda e o correlograma apresenta apresenta apenas três correlações significativas. 
+
+::: panel-tabset
+
+### Beta 0
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,1])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,1]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[0]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,1])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,1],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 1
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,2])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,2]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[1]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,2])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,2],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 2
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,3])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,3]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[2]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,3])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,3],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 3
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,4])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,4]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[3]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,4])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,4],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 4
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,5])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,5]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[4]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,5])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,5],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 5
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,6])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,6]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[5]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,6])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,6],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 6
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,7])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,7]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[6]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,7])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,7],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Gama
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,8])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,8]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(gamma))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,8])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,8],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### xi
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,9])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,9]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(xi))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,9])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,9],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Deviance
+
+```{r}
+ggplot()+
+  aes(x=1:length(modelbayes$Deviance), y=modelbayes$Deviance)+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Deviance), color ="#50a3fc")+
+  labs(x="Iteração", y="Desvio")+
+  theme_bw()+
+ggplot()+
+  aes(x=modelbayes$Deviance)+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Deviance,60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### LP
+
+```{r}
+ggplot()+
+  aes(x=1:length(modelbayes$Monitor), y=modelbayes$Monitor)+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Monitor), color ="#50a3fc")+
+  labs(x="Iteração", y="LP")+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Monitor)+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Monitor,60)+
+  labs(title="")+
+  theme_bw()
+```
+
+:::
+
+## Resíduos
+
+```{r}
+#| output: false
+theta <- apply(modelbayes$Posterior1,2,mlv)
+beta <- theta[1:ncol(X)]
+gama <- theta[ncol(X)+1]
+xi <- theta[ncol(X)+2]
+
+frag <- rgamma(403,1/xi,1/xi)
+zj <- frag[1]
+j <- 1
+
+for (i in 2:nrow(df)){
+  if(df$id[i] != df$id[(i-1)]){
+    j <- j+1
+    zj <- c(zj,frag[j])
+  }
+  else{
+    zj <- c(zj,frag[j])
+  }
+}
+
+Lambda <- NULL
+for (i in 1:nrow(df)){
+  f<-function(t){
+    lambda <- zj[i]*gama*(t^(gama-1))*(exp(X[i,]%*%beta))
+  }
+  Lambda <- c(Lambda,integrate(f,0.001,time[i])$value)
+}
+
+resid <- qnorm(Lambda)
+```
+
+```{r}
+figres3 <- ggplot()+
+  aes(x=seq(1:nrow(df)),y=resid)+
+  geom_point()+
+  labs(x="Índice", y="Resíduos quantílicos")+
+  #geom_hline(yintercept = c(3,-3), colour = "blue",linetype = "dashed")+
+  theme_bw() 
+
+figres4 <-ggplot() +
+  aes(sample=resid)+
+  stat_qq_point(detrend = T) +
+  stat_qq_band(detrend = T, color='black', fill=NA, size=0.5, linetype="dashed")+
+  geom_hline(yintercept = 0, colour = "blue",linetype = "dashed")+
+  geom_vline(xintercept = 0, colour = "blue",linetype = "dashed")+
+  labs(x="Quantis teóricos",y="Desvios")+
+  theme_bw()
+figres3|figres4
+```
+
+# Modelo reduzido
+
+## Abordagem frequentista
+
+```{r}
+df <- read.csv("readmission.csv")|>
+  mutate(chemo = NULL,
+         sex = relevel(factor(sex), "Male"),
+         dukes = relevel(factor(dukes), "A-B"),
+         charlson = relevel(factor(charlson), "0"),
+         death = NULL,
+         time = t.stop) 
+```
+
+```{r}
+sm <- function(op, tipo = "result"){
+  coef <- op$par
+  se <- SEfromHessian(-1*op$hessian)
+  z <- coef/se
+  p_value <- 2*pnorm(abs(z),lower.tail=FALSE)
+  i2.5  <- coef+qnorm(0.025)*se
+  i97.5 <- coef+qnorm(0.975)*se
+  
+  res <- cbind(coef,exp(coef),exp(-coef),se,z,p_value,i2.5,i97.5)
+  rownames(res) <- c("Intercepto", "sexFemale", "dukesC", "dukesD", "charlson1-2",  "charlson3", "gama","xi")
+  colnames(res) <- c("coef","exp(coef)","exp(-coef)","se(coef)","z","p-value","2.5%","97.5%")
+  
+  result <- as.table(round(res,digits = 3))
+  
+  return(result)
+}
+```
+
+```{r}
+modelfreq <- coxph(Surv(t.start,t.stop, event)~sex+dukes+charlson+frailty.gamma(id), data = df)
+```
+
+```{r}
+X <- cbind(intercepto=rep(1,nrow(df)),model.matrix(modelfreq,data=df)[,-ncol(model.matrix(modelfreq,data=df))])
+id <- df$id
+event <- df$event
+time <- df$time
+
+vero <- function(theta){
+  beta <- theta[1:ncol(X)]
+  gama <- theta[ncol(X)+1]
+  xi <- theta[ncol(X)+2]
+  
+  Dj <- summarise(group_by(df,id),sum(event))[,2]
+  Lambdaj <- summarise(group_by(data.frame(df,d=exp(X%*%beta)*(time^gama)),id),sum(d))[,2]
+  
+  LL <- sum(-(1/xi)*log(xi) -log(gamma(1/xi)) + log(gamma((1/xi)+Dj)) - ((1/xi)+Dj)*log((1/xi)+Lambdaj)) + sum(event*log(gama*(time^(gama-1))*(exp(X%*%beta))))
+  
+  return(LL)
+}
+
+Initial.Values <- c(1,modelfreq$coefficients,0.74,1.3)
+estfreq <- optim(Initial.Values, vero, hessian = TRUE, method = "L-BFGS-B",
+                 control = list(maxit=3000000,fnscale=-1),
+                 lower = c(rep(-Inf,ncol(X)),0.01,0.01))
+estfreq2 <- estfreq
+```
+
+
+A partir da abordagem frequentista, é possível notar que todas as covariáveis são significativas ao nível de 5\%. É possível notar ainda que, ao nível de 5\%, há evidências o suficiente para concluir que a variância da fragilidade não é nula e o modelo não se reduz ao modelo para dados independentes.
+
+
+```{r}
+kable(sm(estfreq))
+```
+
+Tomando o exponencial do seu coeficiente estimado, mantidas fixas as outras covariáveis, tem-se que:
+
+- O risco de reinternação dos pacientes do sexo feminino é `r sm(estfreq)[2,2]` vezes o risco dos pacientes do sexo masculino;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r sm(estfreq)[3,3]` vezes o risco dos pacientes que apresentam estágio C;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r sm(estfreq)[4,3]` vezes o risco dos pacientes que apresentam estágio D;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r sm(estfreq)[5,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 1-2;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r sm(estfreq)[6,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 3.
+
+## Resíduos
+
+```{r}
+#| output: false
+theta <- estfreq2$par
+beta <- theta[1:ncol(X)]
+gama <- theta[ncol(X)+1]
+xi <- theta[ncol(X)+2]
+
+frag <- rgamma(403,1/xi,1/xi)
+zj <- frag[1]
+j <- 1
+
+for (i in 2:nrow(df)){
+  if(df$id[i] != df$id[(i-1)]){
+    j <- j+1
+    zj <- c(zj,frag[j])
+  }
+  else{
+    zj <- c(zj,frag[j])
+  }
+}
+
+Lambda <- NULL
+for (i in 1:nrow(df)){
+  f<-function(t){
+    lambda <- zj[i]*gama*(t^(gama-1))*(exp(X[i,]%*%beta))
+  }
+  Lambda <- c(Lambda,integrate(f,0.001,time[i])$value)
+}
+
+resid <- qnorm(Lambda)
+```
+
+```{r}
+figres5 <- ggplot()+
+  aes(x=seq(1:nrow(df)),y=resid)+
+  geom_point()+
+  labs(x="Índice", y="Resíduos quantílicos")+
+  #geom_hline(yintercept = c(3,-3), colour = "blue",linetype = "dashed")+
+  theme_bw() 
+figres6 <- ggplot() +
+  aes(sample=resid)+
+  stat_qq_point(detrend = T) +
+  stat_qq_band(detrend = T, color='black', fill=NA, size=0.5, linetype="dashed")+
+  geom_hline(yintercept = 0, colour = "blue",linetype = "dashed")+
+  geom_vline(xintercept = 0, colour = "blue",linetype = "dashed")+
+  labs(x="Quantis teóricos",y="Desvios")+
+  theme_bw()
+figres5|figres6
+```
+
+## Abordagem Bayesiana
+
+```{r}
+X <- cbind(intercepto=rep(1,nrow(df)),model.matrix(modelfreq,data=df)[,-ncol(model.matrix(modelfreq,data=df))])
+p <- ncol(X)
+beta0 <- rep(0,p)                   
+V0 <- matrix(c(rep(0,p^2)), ncol=p, nrow=p) 
+diag(V0) <- rep(1000,p)
+c <- 0.1
+
+Initial.Values <- c(1,modelfreq$coefficients,0.74,1.3)
+
+burnin <- 1000
+thin <- 200
+N <- (1000+burnin)*thin
+
+parm.names <- as.parm.names(list(beta=rep(0,p),gama=0,xi=0))
+pos.beta <- grep("beta", parm.names)
+pos.gama <- grep("gama", parm.names)
+pos.xi <- grep("xi", parm.names)
+
+MyData <- list(J=p, X=X, time=time, id=id, event=event, mon.names="LP", 
+               parm.names=parm.names,pos.beta=pos.beta,
+               pos.gama=pos.gama,pos.xi=pos.xi)
+
+modelobayes <- function(parm, Data=MyData)
+{ ### Parameters
+  beta <- parm[Data$pos.beta]
+  gama <- parm[Data$pos.gama]
+  xi <- parm[Data$pos.xi]
+  
+  ### Log-Prior
+  beta.prior <- dmvn(beta, beta0, V0, log=TRUE)
+  gama.prior <- dexp(gama, c, log=TRUE)
+  xi.prior <- dexp(xi, c, log=TRUE)
+  
+  ### Log-Likelihood
+  
+  Dj <- summarise(group_by(df,id),sum(event))[,2]
+  
+  Lambdaj <- summarise(group_by(data.frame(df,d=exp(X%*%beta)*(time^gama)),id),sum(d))[,2]
+  
+  LL <- sum(-(1/xi)*log(xi) -log(gamma(1/xi)) + log(gamma((1/xi)+Dj)) - ((1/xi)+Dj)*log((1/xi)+Lambdaj)) + sum(event*log(gama*(time^(gama-1))*(exp(X%*%beta))))
+  
+  
+  ### Log-Posterior
+  LP <- LL + beta.prior + gama.prior + xi.prior
+  
+  Modelout <- list(LP=LP, Dev=-2*LL, Monitor=LP, yhat = exp(X*beta), parm=parm)
+  return(Modelout)
+}
+```
+
+```{r}
+#| output: false
+#modelbayes <- LaplacesDemon(modelobayes, Data=MyData, Initial.Values, Covar=NULL, #Iterations=N, Status=N/5, Thinning=thin, Algorithm="AMWG", Specs=NULL)
+
+load("G:/Meu Drive/TCC/Scripts/model_bayes_weibull2.RData")
+modelbayes2 <- modelbayes
+```
+
+```{r}
+beta2 <- apply(modelbayes$Posterior1,2,mlv)
+vero2 <- vero(beta2)
+prior2 <- dmvn(beta2[1:ncol(X)], beta0, V0, log=TRUE)+dexp(beta2[(ncol(X)+1)], c, log=TRUE)+dexp(beta2[(ncol(X)+2)], c, log=TRUE)
+```
+
+Utilizando o algoritmo Adaptative Metropolis-within-Gibbs, obteve-se uma taxa de aceitação de `r round(modelbayes$Acceptance.Rate*100,2)`\%, próxima do considerado ótimo.
+
+```{r}
+dic2 <- data.frame(all=round(modelbayes$DIC1,2), stationary=round(modelbayes$DIC1,2))
+colnames(dic2) <- c("Todas as amostras","Estacionárias")
+rownames(dic2) <- c("Dbar", "pd", "DIC")
+```
+
+```{r}
+mode <- cbind(c(round(apply(modelbayes$Posterior1,2,mlv),3),Deviance=round(mlv(modelbayes$Deviance),3),LP="-"))
+d <- data.frame(mode = mode,
+                'exp(coef)' =  c(round(exp(as.numeric(mode[1:8])),3), "-","-"),
+                'exp(-coef)' =  c(round(exp(-as.numeric(mode[1:8])),3),"-","-"),
+                round(modelbayes$Summary1,3))
+```
+
+Tomando o exponencial do seu coeficiente estimado, mantidas fixas as outras covariáveis, tem-se que:
+
+- O risco de reinternação dos pacientes do sexo feminino é `r d[2,2]` vezes o risco dos pacientes do sexo masculino;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r d[3,3]` vezes o risco dos pacientes que apresentam estágio C;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam estágio
+tumoral de Dukes A-B é `r d[4,3]` vezes o risco dos pacientes que apresentam estágio D;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r d[5,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 1-2;
+
+- O risco de reinternação dos pacientes os pacientes que apresentam índice de comorbidade de Charlson 0 é `r d[6,3]` vezes o risco dos pacientes os pacientes que apresentam índice de comorbidade 3;
+
+```{r}
+kable(d, caption = "Tabela: Medidas resumo das distribuições dos parâmetros da distribuição a posteriori, do desvio e do LP.")
+```
+
+
+
+
+A partir dos gráficos a seguir e da Tabela, é possível notar que as distribuições a posteriori dos betas, gama e xi são simétricas. É possível notar também há uma notável estacionariedade, evidenciada pela ausência de tendências nos gráficos. O que indica que as amostras estão sendo colhidas de forma aleatória da mesma distribuição alvo. 
+
+Os correlogramas exibidos revelam uma escassa presença de autocorrelações significativas, sugerindo que as amostras podem ser consideradas independentes. Ou seja, as amostras geradas não são fortemente influenciadas pelas amostras geradas anteriormente. 
+
+Os desvios sugerem que a maioria das verossimilhanças foram maximizadas durante o processo, já que a distribuição é assimétrica à direita. Além disso, o correlograma não apresenta indícios de autocorrelação nos desvios das amostras.
+
+Os logaritmos da distribuição a posteriori, das amostras indicam a sua boa adequação, uma vez que a sua distribuição é assimétrica à esquerda e o correlograma apresenta apresenta apenas três correlações significativas. 
+
+::: panel-tabset
+
+### Beta 0
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,1])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,1]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[0]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,1])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,1],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 1
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,2])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,2]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[1]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,2])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,2],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 2
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,3])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,3]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[2]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,3])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,3],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 3
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,4])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,4]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[3]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,4])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,4],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 4
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,5])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,5]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[4]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,5])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,5],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Beta 5
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,6])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,6]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(beta[5]))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,6])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,6],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Gama
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,7])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,7]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(gamma))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,7])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,7],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### xi
+
+```{r}
+ggplot()+
+  aes(x=1:nrow(modelbayes$Posterior1), y=modelbayes$Posterior1[,8])+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Posterior1[,8]), color = "#50a3fc")+
+  labs(x="Iteração", y=expression(xi))+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Posterior1[,8])+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Posterior1[,8],60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### Deviance
+
+```{r}
+ggplot()+
+  aes(x=1:length(modelbayes$Deviance), y=modelbayes$Deviance)+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Deviance), color ="#50a3fc")+
+  labs(x="Iteração", y="Desvio")+
+  theme_bw()+
+ggplot()+
+  aes(x=modelbayes$Deviance)+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Deviance,60)+
+  labs(title="")+
+  theme_bw()
+```
+
+### LP
+
+```{r}
+ggplot()+
+  aes(x=1:length(modelbayes$Monitor), y=modelbayes$Monitor)+
+  geom_line() +
+  geom_hline(yintercept=mean(modelbayes$Monitor), color ="#50a3fc")+
+  labs(x="Iteração", y="LP")+
+  theme_bw()+
+
+ggplot()+
+  aes(x=modelbayes$Monitor)+
+  geom_density(colour="#003e62", fill="#50a3fc")+
+  labs(x="Densidade", y="Valores")+
+  theme_bw() +
+
+ggAcf(modelbayes$Monitor,60)+
+  labs(title="")+
+  theme_bw()
+```
+
+:::
+
+## Resíduos
+
+```{r}
+#| output: false
+theta <- apply(modelbayes$Posterior1,2,mlv)
+beta <- theta[1:ncol(X)]
+gama <- theta[ncol(X)+1]
+xi <- theta[ncol(X)+2]
+
+frag <- rgamma(403,1/xi,1/xi)
+zj <- frag[1]
+j <- 1
+
+for (i in 2:nrow(df)){
+  if(df$id[i] != df$id[(i-1)]){
+    j <- j+1
+    zj <- c(zj,frag[j])
+  }
+  else{
+    zj <- c(zj,frag[j])
+  }
+}
+
+Lambda <- NULL
+for (i in 1:nrow(df)){
+  f<-function(t){
+    lambda <- zj[i]*gama*(t^(gama-1))*(exp(X[i,]%*%beta))
+  }
+  Lambda <- c(Lambda,integrate(f,0.001,time[i])$value)
+}
+
+resid <- qnorm(Lambda)
+```
+
+```{r}
+figres7 <- ggplot()+
+  aes(x=seq(1:nrow(df)),y=resid)+
+  geom_point()+
+  labs(x="Índice", y="Resíduos quantílicos")+
+  #geom_hline(yintercept = c(3,-3), colour = "blue",linetype = "dashed")+
+  theme_bw() 
+figres8 <- ggplot() +
+  aes(sample=resid)+
+  stat_qq_point(detrend = T) +
+  stat_qq_band(detrend = T, color='black', fill=NA, size=0.5, linetype="dashed")+
+  geom_hline(yintercept = 0, colour = "blue",linetype = "dashed")+
+  geom_vline(xintercept = 0, colour = "blue",linetype = "dashed")+
+  labs(x="Quantis teóricos",y="Desvios")+
+  theme_bw()
+
+figres7|figres8
+```
+
+```{r}
+#dens <- function(theta){
+#  beta <- theta[1:ncol(X)]
+#  gama <- theta[ncol(X)+1]
+#  xi <- theta[ncol(X)+2]
+#  
+#  Dj <- summarise(group_by(df,id),sum(event))[,2]
+#  Lambdaj <- summarise(group_by(data.frame(df,d=exp(X%*%beta)*(time^gama)),id),sum(d))[,2]
+#  dj <- summarise(group_by(data.frame(df,d=event*log(gama*(time^(gama-1))*(exp(X%*%beta)))),id),sum(d))[,2]
+  
+#  LF <- -(1/xi)*log(xi) -log(gamma(1/xi)) + log(gamma((1/xi)+Dj)) - ((1/xi)+Dj)*log((1/xi)+Lambdaj) + dj
+  
+#  return(lF)
+#}
+```
+
+# Comparação de modelos
+
+```{r}
+RV <- -2*(-estfreq1$value+estfreq2$value)
+pRV <- pchisq(RV,1,lower.tail=FALSE)
+```
+
+Na abordagem frequentista, o teste da razão de verossimilhanças resultou num valor-p de `r pRV`. Dessa forma, não rejeitamos a hipótese nula ao nível de 5\%. Ou seja, há evidências o suficiente para concluir que o modelo reduzido é mais adequado que o modelo completo. Além disso, o AIC do modelo reduzido é menor, indicando a sua melhor adequação.
+
+```{r}
+AIC_1 <- -2*estfreq1$value+2*7
+BIC_1 <- -2*estfreq1$value+5*log(nrow(df))
+AIC_2 <- -2*estfreq2$value+2*6
+BIC_2 <- -2*estfreq2$value+5*log(nrow(df))
+
+d <- data.frame(c(AIC_1,BIC_1),c(AIC_2,BIC_2))
+colnames(d) <- c("Modelo completo", "Modelo reduzido")
+row.names(d) <- c("AIC","BIC")
+kable(d, caption="Tabela: AIC e BIC dos modelos completo e reduzido para os dados de cancer colorretal.")
+```
+
+
+Na abordagem Bayesiana, o DIC para o modelo reduzido é menor que o do modelo completo, indicando a sua melhor adequação.
+
+```{r}
+d <- data.frame(dic1[,1],dic2[,1])
+rownames(d) <- c("Dbar", "pd", "DIC")
+colnames(d) <- c("Modelo completo","Modelo reduzido")
+kable(d, caption="Tabela: DIC das amostras a posteriori dos modelos completo e reduzido para os dados de cancer colorretal.")
+```
+
+```{r}
+k <- (vero1*prior2)/(vero2*prior1)
+k <- vero1 + prior2 - vero2 - prior2
+```
+
+O fator de Bayes é `r round(k,2)`, isso indica que há evidências a favor do modelo reduzido. Além disso, o modelo com todas as covariáveis precisou de `r round(modelbayes1$Minutes/60,2)`h para gerar todas as amostras, enquanto o modelo sem a covariável quimioterapia precisou de `r round(modelbayes2$Minutes/60,2)`h.
+
+
